@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"imkeeper/pkg/recorder"
 	"io/fs"
 	"path/filepath"
@@ -12,11 +13,14 @@ type Scanner struct {
 	Recursive       bool
 }
 
-func New(rec *recorder.Recorder) *Scanner {
-	return &Scanner{rec: rec, Recursive: true}
+func New() *Scanner {
+	return &Scanner{
+		IncludeDotFiles: false,
+		Recursive:       true,
+	}
 }
 
-func (s *Scanner) Scan(dir string) error {
+func (s *Scanner) Scan(ctx context.Context, dir string, out chan<- *recorder.Record) error {
 	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -38,7 +42,8 @@ func (s *Scanner) Scan(dir string) error {
 			return err
 		}
 
-		s.rec.Record(&path, info)
+		rec := &recorder.Record{path, info}
+		out <- rec
 		return nil
 	})
 }

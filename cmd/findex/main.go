@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"imkeeper/pkg/recorder"
 	"imkeeper/pkg/scanner"
 	"os"
 	"runtime"
+
+	"golang.org/x/sync/errgroup"
 )
 
 func main() {
@@ -29,12 +32,25 @@ func main() {
 	}
 
 	dir := flag.Arg(0)
-	rec := &recorder.Recorder{}
-	s := scanner.New(rec)
+	rec := recorder.New()
+	s := scanner.New()
 	s.IncludeDotFiles = includeDotFiles
 	s.Recursive = !noRecursion
 
-	if err := s.Scan(dir); err != nil {
+	ctx := context.Background()
+	errs, ctx := errgroup.WithContext(ctx)
+
+	channel := make(chan *recorder.Record)
+	errs.Go(func() error {
+		err := s.Scan(ctx, dir, channel)
+		close(channel)
+		return err
+	})
+	errs.Go(func() error {
+		return rec.Consume(channel)
+	})
+
+	if err := errs.Wait(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
