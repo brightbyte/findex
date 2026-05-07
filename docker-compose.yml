@@ -1,0 +1,11 @@
+services:
+  go:
+    image: golang:1.22
+    working_dir: /app
+    volumes:
+      - .:/app
+      - go-cache:/root/go/pkg/mod
+    command: sleep infinity
+
+volumes:
+  go-cache:

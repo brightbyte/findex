@@ -1,0 +1,24 @@
+# IDE
+.idea
+
+# Claude
+.claude
+
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Go Runtime
+go-cache
