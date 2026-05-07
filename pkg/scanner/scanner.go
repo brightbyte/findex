@@ -37,7 +37,8 @@ func (s *Scanner) Scan(dir string) error {
 		if err != nil {
 			return err
 		}
-		s.rec.Record(path, info.Size())
+
+		s.rec.Record(&path, info)
 		return nil
 	})
 }
