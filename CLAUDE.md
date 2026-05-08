@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Module
 
-The Go module is named `imkeeper` (see `go.mod`). The main binary lives at `cmd/findex/`.
+The Go module is named `findex` (see `go.mod`). The main binary lives at `cmd/findex/`.
 
 ## Build & Run
 

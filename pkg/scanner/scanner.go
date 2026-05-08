@@ -2,36 +2,48 @@ package scanner
 
 import (
 	"context"
-	"imkeeper/pkg/recorder"
+	"findex/pkg/recorder"
+	"fmt"
+	"io"
 	"io/fs"
 	"path/filepath"
+	"strings"
 )
 
 type Scanner struct {
-	rec             *recorder.Recorder
 	IncludeDotFiles bool
 	Recursive       bool
+	Output          io.Writer
 }
 
 func New() *Scanner {
 	return &Scanner{
-		IncludeDotFiles: false,
-		Recursive:       true,
+		Recursive: true,
 	}
 }
 
 func (s *Scanner) Scan(ctx context.Context, dir string, out chan<- *recorder.Record) error {
-	ctx.Done()
-	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	var currentDir string
+	var dirCount, total int
+
+	flush := func(d string) {
+		if s.Output != nil && dirCount > 0 {
+			fmt.Fprintf(s.Output, "%s: %d files\n", d, dirCount)
+		}
+	}
+
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		if !s.IncludeDotFiles && len(d.Name()) > 1 && d.Name()[0] == '.' {
-			if d.IsDir() {
-				return fs.SkipDir
+		if len(d.Name()) > 1 && d.Name()[0] == '.' {
+			if strings.HasPrefix(d.Name(), ".findex.") || !s.IncludeDotFiles {
+				if d.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
 			}
-			return nil
 		}
 
 		if d.IsDir() {
@@ -50,14 +62,31 @@ func (s *Scanner) Scan(ctx context.Context, dir string, out chan<- *recorder.Rec
 			return err
 		}
 
-		rec := &recorder.Record{relPath, info}
+		fileDir := filepath.Dir(relPath)
+		if fileDir != currentDir {
+			flush(currentDir)
+			currentDir = fileDir
+			dirCount = 0
+		}
 
 		select {
-		case out <- rec:
+		case out <- &recorder.Record{Path: relPath, Info: info}:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 
+		dirCount++
+		total++
 		return nil
 	})
+
+	if err != nil {
+		return err
+	}
+
+	flush(currentDir)
+	if s.Output != nil {
+		fmt.Fprintf(s.Output, "total: %d files\n", total)
+	}
+	return nil
 }

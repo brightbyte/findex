@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
+	"findex/pkg/recorder"
+	"findex/pkg/scanner"
 	"flag"
 	"fmt"
-	"imkeeper/pkg/recorder"
-	"imkeeper/pkg/scanner"
 	"os"
 	"os/signal"
 	"runtime"
@@ -17,6 +17,8 @@ import (
 var includeDotFiles bool
 var noRecursion bool
 var dry bool
+var quiet bool
+var batchSize int
 var dir string
 
 func init() {
@@ -31,10 +33,13 @@ func init() {
 	flag.BoolVar(&noRecursion, "R", false, "do not recurse into subdirectories")
 
 	flag.BoolVar(&dry, "dry", false, "print results to stdout instead of writing to database")
+	flag.BoolVar(&quiet, "q", false, "suppress progress output")
+	flag.BoolVar(&quiet, "quiet", false, "suppress progress output")
+	flag.IntVar(&batchSize, "batch-size", 100, "number of inserts per transaction")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: findex [-a] [-R] [-dry] <directory>")
+		fmt.Fprintln(os.Stderr, "usage: findex [-a] [-R] [-dry] [-batch-size N] <directory>")
 		os.Exit(1)
 	}
 
@@ -46,11 +51,14 @@ func main() {
 	if dry {
 		rec = &recorder.Echo{}
 	} else {
-		rec = &recorder.Sqlite{}
+		rec = &recorder.Sqlite{Filename: ".findex.sqlite", BatchSize: batchSize}
 	}
 	s := scanner.New()
 	s.IncludeDotFiles = includeDotFiles
 	s.Recursive = !noRecursion
+	if !quiet {
+		s.Output = os.Stdout
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

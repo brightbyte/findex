@@ -1,4 +1,4 @@
-module imkeeper
+module findex
 
 go 1.25.0
 
