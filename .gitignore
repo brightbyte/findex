@@ -16,9 +16,8 @@ bin/
 *.test
 *.out
 
-# Go workspace
+# Go Runtime
+go.sum
+go-cache
 go.work
 go.work.sum
-
-# Go Runtime
-go-cache
