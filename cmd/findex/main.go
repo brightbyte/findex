@@ -16,6 +16,7 @@ import (
 
 var includeDotFiles bool
 var noRecursion bool
+var dry bool
 var dir string
 
 func init() {
@@ -28,10 +29,12 @@ func init() {
 
 	flag.BoolVar(&noRecursion, "no-recursion", false, "do not recurse into subdirectories")
 	flag.BoolVar(&noRecursion, "R", false, "do not recurse into subdirectories")
+
+	flag.BoolVar(&dry, "dry", false, "print results to stdout instead of writing to database")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: findex [-a] [-R] <directory>")
+		fmt.Fprintln(os.Stderr, "usage: findex [-a] [-R] [-dry] <directory>")
 		os.Exit(1)
 	}
 
@@ -39,7 +42,12 @@ func init() {
 }
 
 func main() {
-	rec := &recorder.Echo{}
+	var rec recorder.Recorder
+	if dry {
+		rec = &recorder.Echo{}
+	} else {
+		rec = &recorder.Sqlite{}
+	}
 	s := scanner.New()
 	s.IncludeDotFiles = includeDotFiles
 	s.Recursive = !noRecursion

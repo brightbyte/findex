@@ -15,9 +15,9 @@ bin/
 # Test artifacts
 *.test
 *.out
+.findex.sqlite
 
 # Go Runtime
-go.sum
 go-cache
 go.work
 go.work.sum
