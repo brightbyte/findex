@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"findex/pkg/dupes"
 	"findex/pkg/list"
 	"findex/pkg/recorder"
 	"findex/pkg/scanner"
@@ -43,6 +44,8 @@ func main() {
 		cmdUpdate(args)
 	case "list":
 		cmdList(args)
+	case "dupes":
+		cmdDupes(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		cmdHelp()
@@ -74,7 +77,10 @@ list usage:
   findex list [options] <directory> [prefix]
 
   Options:
-  -g, -glob         filter output by glob pattern`)
+  -g, -glob         filter output by glob pattern
+
+dupes usage:
+  findex dupes <directory>`)
 }
 
 func cmdUpdate(args []string) {
@@ -127,6 +133,17 @@ func cmdUpdate(args []string) {
 	})
 
 	if err := errs.Wait(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func cmdDupes(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: findex dupes <directory>")
+		os.Exit(1)
+	}
+	if err := dupes.Dupes(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
