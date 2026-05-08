@@ -21,6 +21,7 @@ func New() *Scanner {
 }
 
 func (s *Scanner) Scan(ctx context.Context, dir string, out chan<- *recorder.Record) error {
+	ctx.Done()
 	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -43,7 +44,13 @@ func (s *Scanner) Scan(ctx context.Context, dir string, out chan<- *recorder.Rec
 		}
 
 		rec := &recorder.Record{path, info}
-		out <- rec
+
+		select {
+		case out <- rec:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
 		return nil
 	})
 }

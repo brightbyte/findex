@@ -7,21 +7,25 @@ import (
 	"imkeeper/pkg/recorder"
 	"imkeeper/pkg/scanner"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"golang.org/x/sync/errgroup"
 )
 
-func main() {
+var includeDotFiles bool
+var noRecursion bool
+var dir string
+
+func init() {
 	if runtime.GOOS == "windows" {
 		fmt.Fprintln(os.Stderr, "warning: hard link detection is not supported on Windows")
 	}
 
-	var includeDotFiles bool
 	flag.BoolVar(&includeDotFiles, "a", false, "include dot files and directories")
 	flag.BoolVar(&includeDotFiles, "all", false, "include dot files and directories")
 
-	var noRecursion bool
 	flag.BoolVar(&noRecursion, "no-recursion", false, "do not recurse into subdirectories")
 	flag.BoolVar(&noRecursion, "R", false, "do not recurse into subdirectories")
 	flag.Parse()
@@ -31,23 +35,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	dir := flag.Arg(0)
-	rec := recorder.New()
+	dir = flag.Arg(0)
+}
+
+func main() {
+	rec := &recorder.Echo{}
 	s := scanner.New()
 	s.IncludeDotFiles = includeDotFiles
 	s.Recursive = !noRecursion
 
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	errs, ctx := errgroup.WithContext(ctx)
 
 	channel := make(chan *recorder.Record)
 	errs.Go(func() error {
+		defer close(channel)
 		err := s.Scan(ctx, dir, channel)
-		close(channel)
 		return err
 	})
 	errs.Go(func() error {
-		return rec.Consume(channel)
+		return recorder.Consume(dir, rec, channel)
 	})
 
 	if err := errs.Wait(); err != nil {
