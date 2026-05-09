@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"findex/pkg/dirdupes"
 	"findex/pkg/dupes"
 	"findex/pkg/list"
 	"findex/pkg/recorder"
@@ -46,6 +47,8 @@ func main() {
 		cmdList(args)
 	case "dupes":
 		cmdDupes(args)
+	case "dirdupes":
+		cmdDirDupes(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		cmdHelp()
@@ -62,6 +65,7 @@ Global flags:
 Commands:
   update        scan a directory and record files to .findex.sqlite
   list          list contents of an existing .findex.sqlite
+  dupes         find duplicates
   help          show this help
 
 update usage:
@@ -80,7 +84,10 @@ list usage:
   -g, -glob         filter output by glob pattern
 
 dupes usage:
-  findex dupes <directory>`)
+  findex dupes <directory>
+
+dirdupes usage:
+  findex dirdupes <directory>`)
 }
 
 func cmdUpdate(args []string) {
@@ -144,6 +151,17 @@ func cmdDupes(args []string) {
 		os.Exit(1)
 	}
 	if err := dupes.Dupes(args[0]); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func cmdDirDupes(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: findex dirdupes <directory>")
+		os.Exit(1)
+	}
+	if err := dirdupes.DirDupes(args[0]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
