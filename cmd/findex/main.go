@@ -87,7 +87,10 @@ dupes usage:
   findex dupes <directory>
 
 dirdupes usage:
-  findex dirdupes <directory>`)
+  findex dirdupes [-minsize N] <directory>
+
+  Options:
+  -minsize N    minimum directory size in KB to consider (default 1)`)
 }
 
 func cmdUpdate(args []string) {
@@ -157,11 +160,18 @@ func cmdDupes(args []string) {
 }
 
 func cmdDirDupes(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: findex dirdupes <directory>")
+	fs := flag.NewFlagSet("dirdupes", flag.ExitOnError)
+	var minSizeKB int64
+	fs.Int64Var(&minSizeKB, "minsize", 1, "minimum directory size in KB to consider")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: findex dirdupes [-minsize N] <directory>")
 		os.Exit(1)
 	}
-	if err := dirdupes.DirDupes(args[0]); err != nil {
+	d := dirdupes.NewDetector(fs.Arg(0))
+	d.MinSize = minSizeKB * 1024
+	if err := d.DetectDupes(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
