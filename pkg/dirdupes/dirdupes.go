@@ -49,18 +49,16 @@ func (d *Detector) DetectDupes() error {
 // identified as a duplicate, its subdirectories are skipped.
 func (d *Detector) findDirDupes() error {
 	rows, err := d.db.Query(`
-		SELECT path, file_count, total_size, depth FROM dir_summaries
-		WHERE file_count > 0
-		  AND total_size >= ?
-		  AND (total_size, file_count) IN (
-		      SELECT total_size, file_count FROM dir_summaries
-		      WHERE file_count > 0
-		        AND total_size >= ?
-		      GROUP BY total_size, file_count
-		      HAVING COUNT(*) > 1
-		  )
-		ORDER BY depth, total_size, file_count, path
-	`, d.MinSize, d.MinSize)
+		SELECT DISTINCT d.path, d.file_count, d.total_size, d.depth
+		FROM dir_summaries d
+		JOIN dir_summaries d2
+		  ON d.total_size = d2.total_size
+		 AND d.file_count = d2.file_count
+		 AND d.path != d2.path
+		WHERE d.file_count > 0
+		  AND d.total_size >= ?
+		ORDER BY d.depth, d.total_size, d.file_count, d.path
+	`, d.MinSize)
 	if err != nil {
 		return err
 	}

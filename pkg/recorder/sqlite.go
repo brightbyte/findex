@@ -181,7 +181,8 @@ func (s *Sqlite) buildDirSummaries() error {
 			file_count INTEGER NOT NULL,
 			total_size INTEGER NOT NULL,
 			depth      INTEGER NOT NULL
-		)
+		);
+		CREATE INDEX IF NOT EXISTS idx_size_count ON dir_summaries(total_size, file_count)
 	`)
 	if err != nil {
 		return err
