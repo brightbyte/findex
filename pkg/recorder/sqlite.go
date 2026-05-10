@@ -13,12 +13,15 @@ import (
 type Sqlite struct {
 	Filename  string
 	BatchSize int
+	Temp      bool    // write to a TEMP TABLE "scan_files" instead of "files"; skip prune/digest
+	DB        *sql.DB // if non-nil, use this connection instead of opening Filename; not closed on Close
 	timestamp time.Time
 	db        *sql.DB
 	prepared  *sql.Stmt
 	tx        *sql.Tx
 	stmt      *sql.Stmt
 	count     int
+	ownDB     bool // true when we opened the DB ourselves and must close it
 }
 
 func (s *Sqlite) batchSize() int {
@@ -31,35 +34,62 @@ func (s *Sqlite) batchSize() int {
 func (s *Sqlite) Open(basepath string) error {
 	s.timestamp = time.Now()
 
-	db, err := sql.Open("sqlite", filepath.Join(basepath, s.Filename))
+	if s.DB != nil {
+		s.db = s.DB
+		s.ownDB = false
+	} else {
+		db, err := sql.Open("sqlite", filepath.Join(basepath, s.Filename))
+		if err != nil {
+			return err
+		}
+		s.db = db
+		s.ownDB = true
+	}
+
+	var err error
+	if s.Temp {
+		_, err = s.db.Exec(`
+			CREATE TEMP TABLE IF NOT EXISTS scan_files (
+				path      TEXT    NOT NULL,
+				basename  TEXT    NOT NULL,
+				size      INTEGER NOT NULL
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_path_basename ON scan_files(path, basename);
+		`)
+	} else {
+		_, err = s.db.Exec(`
+			CREATE TABLE IF NOT EXISTS files (
+				id        INTEGER PRIMARY KEY AUTOINCREMENT,
+				path      TEXT    NOT NULL,
+				basename  TEXT    NOT NULL,
+				size      INTEGER NOT NULL,
+				timestamp INTEGER NOT NULL
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_path_basename ON files(path, basename);
+			CREATE INDEX IF NOT EXISTS idx_size ON files(size);
+			CREATE INDEX IF NOT EXISTS idx_timestamp ON files(timestamp);
+		`)
+	}
 	if err != nil {
+		if s.ownDB {
+			_ = s.db.Close()
+		}
 		return err
 	}
 
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS files (
-			id        INTEGER PRIMARY KEY AUTOINCREMENT,
-			path      TEXT    NOT NULL,
-			basename  TEXT    NOT NULL,
-			size      INTEGER NOT NULL,
-			timestamp INTEGER NOT NULL
-		);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_path_basename ON files(path, basename);
-		CREATE INDEX IF NOT EXISTS idx_size ON files(size);
-		CREATE INDEX IF NOT EXISTS idx_timestamp ON files(timestamp);
-	`)
+	var prepared *sql.Stmt
+	if s.Temp {
+		prepared, err = s.db.Prepare(`INSERT OR REPLACE INTO scan_files(path, basename, size) VALUES(?, ?, ?)`)
+	} else {
+		prepared, err = s.db.Prepare(`INSERT OR REPLACE INTO files(path, basename, size, timestamp) VALUES(?, ?, ?, ?)`)
+	}
 	if err != nil {
-		_ = db.Close()
+		if s.ownDB {
+			_ = s.db.Close()
+		}
 		return err
 	}
 
-	prepared, err := db.Prepare(`INSERT OR REPLACE INTO files(path, basename, size, timestamp) VALUES(?, ?, ?, ?)`)
-	if err != nil {
-		_ = db.Close()
-		return err
-	}
-
-	s.db = db
 	s.prepared = prepared
 	return s.beginBatch()
 }
@@ -81,12 +111,21 @@ func (s *Sqlite) commitBatch() error {
 }
 
 func (s *Sqlite) Record(rec *Record) error {
-	_, err := s.stmt.Exec(
-		filepath.Dir(rec.Path),
-		filepath.Base(rec.Path),
-		rec.Info.Size(),
-		s.timestamp.Unix(),
-	)
+	var err error
+	if s.Temp {
+		_, err = s.stmt.Exec(
+			filepath.Dir(rec.Path),
+			filepath.Base(rec.Path),
+			rec.Info.Size(),
+		)
+	} else {
+		_, err = s.stmt.Exec(
+			filepath.Dir(rec.Path),
+			filepath.Base(rec.Path),
+			rec.Info.Size(),
+			s.timestamp.Unix(),
+		)
+	}
 	if err != nil {
 		return err
 	}
@@ -105,40 +144,49 @@ func (s *Sqlite) Close(err error) error {
 		return nil
 	}
 
+	closeDB := func() error {
+		if s.ownDB {
+			return s.db.Close()
+		}
+		return nil
+	}
+
 	if err != nil {
 		if s.stmt != nil {
 			_ = s.stmt.Close()
 		}
-
 		if s.tx != nil {
 			_ = s.tx.Rollback()
 		}
-
 		if s.prepared != nil {
 			_ = s.prepared.Close()
 		}
-
-		return s.db.Close()
+		return closeDB()
 	}
+
 	if commitErr := s.commitBatch(); commitErr != nil {
 		_ = s.prepared.Close()
-		_ = s.db.Close()
+		_ = closeDB()
 		return commitErr
 	}
 
 	_ = s.prepared.Close()
 
+	if s.Temp {
+		return closeDB()
+	}
+
 	if pruneErr := s.prune(); pruneErr != nil {
-		_ = s.db.Close()
+		_ = closeDB()
 		return pruneErr
 	}
 
 	if digestErr := s.digest(); digestErr != nil {
-		_ = s.db.Close()
+		_ = closeDB()
 		return digestErr
 	}
 
-	return s.db.Close()
+	return closeDB()
 }
 
 // delete outdated entries  from the file table

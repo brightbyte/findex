@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"findex/pkg/diff"
 	"findex/pkg/dirdupes"
 	"findex/pkg/dupes"
 	"findex/pkg/list"
@@ -49,6 +50,8 @@ func main() {
 		cmdDupes(args)
 	case "dirdupes":
 		cmdDirDupes(args)
+	case "diff":
+		cmdDiff(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		cmdHelp()
@@ -66,6 +69,7 @@ Commands:
   update        scan a directory and record files to .findex.sqlite
   list          list contents of an existing .findex.sqlite
   dupes         find duplicates
+  diff          show files added, removed, or changed since last update
   help          show this help
 
 update usage:
@@ -90,7 +94,14 @@ dirdupes usage:
   findex dirdupes [-minsize N] <directory>
 
   Options:
-  -minsize N    minimum directory size in KB to consider (default 1)`)
+  -minsize N    minimum directory size in KB to consider (default 1)
+
+diff usage:
+  findex diff [options] <directory>
+
+  Options:
+  -a, -all          include dot files and directories
+  -R, -no-recursion do not recurse into subdirectories`)
 }
 
 func cmdUpdate(args []string) {
@@ -172,6 +183,36 @@ func cmdDirDupes(args []string) {
 	d := dirdupes.NewDetector(fs.Arg(0))
 	d.MinSize = minSizeKB * 1024
 	if err := d.DetectDupes(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func cmdDiff(args []string) {
+	fs := flag.NewFlagSet("diff", flag.ExitOnError)
+	var includeDotFiles bool
+	var noRecursion bool
+	fs.BoolVar(&includeDotFiles, "a", false, "include dot files and directories")
+	fs.BoolVar(&includeDotFiles, "all", false, "include dot files and directories")
+	fs.BoolVar(&noRecursion, "no-recursion", false, "do not recurse into subdirectories")
+	fs.BoolVar(&noRecursion, "R", false, "do not recurse into subdirectories")
+	fs.BoolVar(&quiet, "q", false, "suppress progress output")
+	fs.BoolVar(&quiet, "quiet", false, "suppress progress output")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: findex diff [-a] [-R] <directory>")
+		os.Exit(1)
+	}
+
+	d := &diff.Differ{
+		IncludeDotFiles: includeDotFiles,
+		Recursive:       !noRecursion,
+	}
+	if !quiet {
+		d.Output = os.Stdout
+	}
+	if err := d.Diff(fs.Arg(0)); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
