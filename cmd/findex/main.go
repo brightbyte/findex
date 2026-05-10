@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"findex/pkg/db"
 	"findex/pkg/diff"
 	"findex/pkg/dirdupes"
 	"findex/pkg/dupes"
@@ -12,25 +13,29 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
-
-	"golang.org/x/sync/errgroup"
 )
 
 var quiet bool
 
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	fs.BoolVar(&quiet, "q", false, "quiet mode")
+	fs.BoolVar(&quiet, "quiet", false, "suppress progress output")
+
+	return fs
+}
+
 func init() {
 	if runtime.GOOS == "windows" {
-		fmt.Fprintln(os.Stderr, "warning: hard link detection is not supported on Windows")
+		fmt.Fprintln(os.Stderr, "WARNING: Some operations may not work correctly on Windows")
 	}
-
-	flag.BoolVar(&quiet, "q", false, "suppress progress output")
-	flag.BoolVar(&quiet, "quiet", false, "suppress progress output")
-	flag.Parse()
 }
 
 func main() {
+	flag.Parse()
 	if flag.NArg() < 1 {
 		cmdHelp()
 		os.Exit(1)
@@ -60,10 +65,7 @@ func main() {
 }
 
 func cmdHelp() {
-	fmt.Println(`usage: findex [-q] <command> [options] <directory>
-
-Global flags:
-  -q, -quiet    suppress progress output
+	fmt.Println(`usage: findex <command> [options] <directory>
 
 Commands:
   update        scan a directory and record files to .findex.sqlite
@@ -101,11 +103,14 @@ diff usage:
 
   Options:
   -a, -all          include dot files and directories
-  -R, -no-recursion do not recurse into subdirectories`)
+  -R, -no-recursion do not recurse into subdirectories
+
+Global Options:
+  -q, -quiet    suppress progress output`)
 }
 
 func cmdUpdate(args []string) {
-	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	fs := newFlagSet("update")
 	var includeDotFiles bool
 	var noRecursion bool
 	var dry bool
@@ -115,8 +120,6 @@ func cmdUpdate(args []string) {
 	fs.BoolVar(&noRecursion, "no-recursion", false, "do not recurse into subdirectories")
 	fs.BoolVar(&noRecursion, "R", false, "do not recurse into subdirectories")
 	fs.BoolVar(&dry, "dry", false, "print results to stdout instead of writing to database")
-	fs.BoolVar(&quiet, "q", false, "suppress progress output")
-	fs.BoolVar(&quiet, "quiet", false, "suppress progress output")
 	fs.IntVar(&batchSize, "batch-size", 100, "number of inserts per transaction")
 	fs.Parse(args)
 
@@ -130,8 +133,15 @@ func cmdUpdate(args []string) {
 	if dry {
 		rec = &recorder.Echo{}
 	} else {
-		rec = &recorder.Sqlite{Filename: ".findex.sqlite", BatchSize: batchSize}
+		db, err := db.Open(filepath.Join(dir, ".findex.sqlite"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer db.Close()
+		rec = &recorder.DBRecorder{DB: db, BatchSize: batchSize}
 	}
+
 	s := scanner.New()
 	s.IncludeDotFiles = includeDotFiles
 	s.Recursive = !noRecursion
@@ -142,18 +152,9 @@ func cmdUpdate(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	errs, ctx := errgroup.WithContext(ctx)
+	err := s.ScanInto(ctx, dir, rec)
 
-	channel := make(chan *recorder.Record)
-	errs.Go(func() error {
-		defer close(channel)
-		return s.Scan(ctx, dir, channel)
-	})
-	errs.Go(func() error {
-		return recorder.Consume(dir, rec, channel)
-	})
-
-	if err := errs.Wait(); err != nil {
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -164,14 +165,28 @@ func cmdDupes(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: findex dupes <directory>")
 		os.Exit(1)
 	}
-	if err := dupes.Dupes(args[0]); err != nil {
+
+	dir := args[0]
+	db, err := db.Open(filepath.Join(dir, ".findex.sqlite"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	d := dupes.Detector{DB: db}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := d.Dupes(ctx, dir); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
 func cmdDirDupes(args []string) {
-	fs := flag.NewFlagSet("dirdupes", flag.ExitOnError)
+	fs := newFlagSet("dirdupes")
 	var minSizeKB int64
 	fs.Int64Var(&minSizeKB, "minsize", 1, "minimum directory size in KB to consider")
 	fs.Parse(args)
@@ -180,24 +195,35 @@ func cmdDirDupes(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: findex dirdupes [-minsize N] <directory>")
 		os.Exit(1)
 	}
-	d := dirdupes.NewDetector(fs.Arg(0))
+
+	dir := fs.Arg(0)
+	db, err := db.Open(filepath.Join(dir, ".findex.sqlite"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	d := dirdupes.NewDetector(db)
 	d.MinSize = minSizeKB * 1024
-	if err := d.DetectDupes(); err != nil {
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := d.DetectDupes(ctx, dir); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
 func cmdDiff(args []string) {
-	fs := flag.NewFlagSet("diff", flag.ExitOnError)
+	fs := newFlagSet("diff")
 	var includeDotFiles bool
 	var noRecursion bool
 	fs.BoolVar(&includeDotFiles, "a", false, "include dot files and directories")
 	fs.BoolVar(&includeDotFiles, "all", false, "include dot files and directories")
 	fs.BoolVar(&noRecursion, "no-recursion", false, "do not recurse into subdirectories")
 	fs.BoolVar(&noRecursion, "R", false, "do not recurse into subdirectories")
-	fs.BoolVar(&quiet, "q", false, "suppress progress output")
-	fs.BoolVar(&quiet, "quiet", false, "suppress progress output")
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
@@ -205,21 +231,35 @@ func cmdDiff(args []string) {
 		os.Exit(1)
 	}
 
+	dir := fs.Arg(0)
+	db, err := db.Open(filepath.Join(dir, ".findex.sqlite"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
 	d := &diff.Differ{
+		OldState:        db,
 		IncludeDotFiles: includeDotFiles,
 		Recursive:       !noRecursion,
+		BatchSize:       500, // TODO: add option
 	}
 	if !quiet {
 		d.Output = os.Stdout
 	}
-	if err := d.Diff(fs.Arg(0)); err != nil {
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := d.Diff(ctx, dir); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
 func cmdList(args []string) {
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	fs := newFlagSet("list")
 	var glob string
 	fs.StringVar(&glob, "g", "", "filter by glob pattern on basename")
 	fs.StringVar(&glob, "glob", "", "filter by glob pattern on basename")
@@ -235,7 +275,14 @@ func cmdList(args []string) {
 		prefix = fs.Arg(1)
 	}
 
-	if err := list.List(dir, prefix, glob); err != nil {
+	db, err := db.Open(filepath.Join(dir, ".findex.sqlite"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	if err := list.List(db, prefix, glob); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}

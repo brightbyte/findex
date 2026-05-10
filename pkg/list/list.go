@@ -2,25 +2,19 @@ package list
 
 import (
 	"database/sql"
+	"findex/pkg/db"
 	"fmt"
 	"path/filepath"
-
-	_ "modernc.org/sqlite"
 )
 
-func List(dir, prefix, glob string) error {
-	db, err := sql.Open("sqlite", filepath.Join(dir, ".findex.sqlite"))
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
+func List(db *db.Database, prefix, glob string) error {
+	var err error
 	var rows *sql.Rows
 	if prefix == "" {
-		rows, err = db.Query(`SELECT id, path, basename, size FROM files ORDER BY path, basename`)
+		rows, err = db.Query(`SELECT id, path, basename, size FROM {prefix}files ORDER BY path, basename`)
 	} else {
 		rows, err = db.Query(
-			`SELECT id, path, basename, size FROM files WHERE path = ? OR path LIKE ? ORDER BY path, basename`,
+			`SELECT id, path, basename, size FROM {prefix}files WHERE path = ? OR path LIKE ? ORDER BY path, basename`,
 			prefix, prefix+"/%",
 		)
 	}

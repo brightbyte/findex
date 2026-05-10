@@ -1,7 +1,8 @@
 package dupes
 
 import (
-	"database/sql"
+	"context"
+	"findex/pkg/db"
 	"fmt"
 	"io"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"syscall"
 
 	"github.com/cespare/xxhash/v2"
-	_ "modernc.org/sqlite"
 )
 
 type fileEntry struct {
@@ -21,23 +21,25 @@ type fileEntry struct {
 	hasIno  bool
 }
 
-func Dupes(dir string) error {
-	db, err := sql.Open("sqlite", filepath.Join(dir, ".findex.sqlite"))
-	if err != nil {
-		return err
-	}
-	defer db.Close()
+type Detector struct {
+	DB *db.Database
+}
 
-	groups, err := loadGroups(dir, db)
+func (d *Detector) Dupes(ctx context.Context, dir string) error {
+	groups, err := d.loadGroups(dir)
 	if err != nil {
 		return err
 	}
 
 	hashCache := make(map[string]uint64)
 	for _, group := range groups {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		entries := statEntries(group)
 		if len(entries) >= 2 {
-			findDupes(entries, hashCache)
+			d.findDupes(entries, hashCache)
 		}
 	}
 	return nil
@@ -45,9 +47,9 @@ func Dupes(dir string) error {
 
 // loadGroups queries the database and returns slices of fileEntry grouped by size.
 // Groups with only one entry are excluded.
-func loadGroups(dir string, db *sql.DB) ([][]fileEntry, error) {
-	rows, err := db.Query(`
-		SELECT path, basename, size FROM files
+func (d *Detector) loadGroups(dir string) ([][]fileEntry, error) {
+	rows, err := d.DB.Query(`
+		SELECT path, basename, size FROM {prefix}files
 		WHERE size > 0
 		ORDER BY size, path, basename
 	`)
@@ -108,7 +110,7 @@ func statEntries(group []fileEntry) []fileEntry {
 }
 
 // findDupes prints hard link and content duplicate pairs within a group.
-func findDupes(entries []fileEntry, hashCache map[string]uint64) {
+func (d *Detector) findDupes(entries []fileEntry, hashCache map[string]uint64) {
 	// Find hard link pairs by inode+dev.
 	// inodeSeen tracks the first file seen for each inode; subsequent files with
 	// the same inode are hard links and are skipped in the hash phase.

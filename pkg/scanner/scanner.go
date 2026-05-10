@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type Scanner struct {
@@ -20,6 +22,19 @@ func New() *Scanner {
 	return &Scanner{
 		Recursive: true,
 	}
+}
+
+func (s *Scanner) ScanInto(ctx context.Context, dir string, rcrdr recorder.Recorder) error {
+	errs, ctx := errgroup.WithContext(ctx)
+	ch := make(chan *recorder.Record)
+	errs.Go(func() error {
+		defer close(ch)
+		return s.Scan(ctx, dir, ch)
+	})
+	errs.Go(func() error {
+		return recorder.Consume(dir, rcrdr, ch)
+	})
+	return errs.Wait()
 }
 
 func (s *Scanner) Scan(ctx context.Context, dir string, out chan<- *recorder.Record) error {

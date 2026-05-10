@@ -2,71 +2,53 @@ package diff
 
 import (
 	"context"
-	"database/sql"
+	"findex/pkg/db"
 	"findex/pkg/recorder"
 	"findex/pkg/scanner"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
-
-	"golang.org/x/sync/errgroup"
-	_ "modernc.org/sqlite"
 )
 
 type Differ struct {
+	OldState        *db.Database
 	IncludeDotFiles bool
 	Recursive       bool
+	BatchSize       int
 	Output          io.Writer // progress output (nil = silent)
+	CurrentState    *db.Database
 }
 
-func (d *Differ) Diff(dir string) error {
-	db, err := sql.Open("sqlite", filepath.Join(dir, ".findex.sqlite"))
-	if err != nil {
-		return err
-	}
-	defer db.Close()
+func (d *Differ) Diff(ctx context.Context, dir string) error {
+	d.CurrentState = d.OldState.WithPrefix("diff_", true)
 
-	rec := &recorder.Sqlite{Temp: true, DB: db, BatchSize: 500}
+	rec := &recorder.DBRecorder{DB: d.CurrentState, BatchSize: d.BatchSize}
 	s := scanner.New()
 	s.IncludeDotFiles = d.IncludeDotFiles
 	s.Recursive = d.Recursive
-	s.Output = d.Output
+	s.Output = d.Output // TODO: use this instead of fmt.Printf below
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	errs, ctx := errgroup.WithContext(ctx)
-	ch := make(chan *recorder.Record)
-	errs.Go(func() error {
-		defer close(ch)
-		return s.Scan(ctx, dir, ch)
-	})
-	errs.Go(func() error {
-		return recorder.Consume(dir, rec, ch)
-	})
-	if err := errs.Wait(); err != nil {
+	err := s.ScanInto(ctx, dir, rec)
+	if err != nil {
 		return err
 	}
 
-	return printDiff(db)
+	return d.printDiff()
 }
 
-func printDiff(db *sql.DB) error {
-	if err := queryAdded(db); err != nil {
+func (d *Differ) printDiff() error {
+	if err := d.queryAdded(); err != nil {
 		return err
 	}
-	if err := queryRemoved(db); err != nil {
+	if err := d.queryRemoved(); err != nil {
 		return err
 	}
-	return queryModified(db)
+	return d.queryModified()
 }
 
-func queryAdded(db *sql.DB) error {
-	rows, err := db.Query(`
-		SELECT path, basename FROM scan_files
+func (d *Differ) queryAdded() error {
+	rows, err := d.OldState.Query(`
+		SELECT path, basename FROM diff_files
 		WHERE (path, basename) NOT IN (SELECT path, basename FROM files)
 		ORDER BY path, basename
 	`)
@@ -84,10 +66,10 @@ func queryAdded(db *sql.DB) error {
 	return rows.Err()
 }
 
-func queryRemoved(db *sql.DB) error {
-	rows, err := db.Query(`
+func (d *Differ) queryRemoved() error {
+	rows, err := d.OldState.Query(`
 		SELECT path, basename FROM files
-		WHERE (path, basename) NOT IN (SELECT path, basename FROM scan_files)
+		WHERE (path, basename) NOT IN (SELECT path, basename FROM diff_files)
 		ORDER BY path, basename
 	`)
 	if err != nil {
@@ -104,10 +86,10 @@ func queryRemoved(db *sql.DB) error {
 	return rows.Err()
 }
 
-func queryModified(db *sql.DB) error {
-	rows, err := db.Query(`
+func (d *Differ) queryModified() error {
+	rows, err := d.OldState.Query(`
 		SELECT f.path, f.basename, f.size, s.size
-		FROM files f JOIN scan_files s ON f.path = s.path AND f.basename = s.basename
+		FROM files f JOIN diff_files s ON f.path = s.path AND f.basename = s.basename
 		WHERE f.size != s.size
 		ORDER BY f.path, f.basename
 	`)

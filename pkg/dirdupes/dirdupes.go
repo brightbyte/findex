@@ -1,15 +1,14 @@
 package dirdupes
 
 import (
-	"database/sql"
+	"context"
+	"findex/pkg/db"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
-
-	_ "modernc.org/sqlite"
 )
 
 type fileEntry struct {
@@ -18,40 +17,29 @@ type fileEntry struct {
 }
 
 type Detector struct {
-	dir        string
-	db         *sql.DB
+	DB         *db.Database
 	MinSize    int64 // minimum total_size in bytes for a directory to be considered
 	entryCache map[string][]fileEntry
 	covered    map[string]bool
 }
 
-func NewDetector(dir string) *Detector {
+func NewDetector(db *db.Database) *Detector {
 	return &Detector{
-		dir:        dir,
+		DB:         db,
 		entryCache: make(map[string][]fileEntry),
 		covered:    make(map[string]bool),
 	}
 }
 
-func (d *Detector) DetectDupes() error {
-	db, err := sql.Open("sqlite", filepath.Join(d.dir, ".findex.sqlite"))
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	d.db = db
-	return d.findDirDupes()
-}
-
-// findDirDupes finds directories with matching (total_size, file_count),
+// DetectDupes finds directories with matching (total_size, file_count),
 // then confirms with a sorted file-size multiset comparison.
 // Candidates are processed in ascending depth order; once a directory is
 // identified as a duplicate, its subdirectories are skipped.
-func (d *Detector) findDirDupes() error {
-	rows, err := d.db.Query(`
+func (d *Detector) DetectDupes(ctx context.Context, dir string) error {
+	rows, err := d.DB.Query(`
 		SELECT DISTINCT d.path, d.file_count, d.total_size, d.depth
-		FROM dir_summaries d
-		JOIN dir_summaries d2
+		FROM {prefix}dir_summaries d
+		JOIN {prefix}dir_summaries d2
 		  ON d.total_size = d2.total_size
 		 AND d.file_count = d2.file_count
 		 AND d.path != d2.path
@@ -72,6 +60,10 @@ func (d *Detector) findDirDupes() error {
 	var keys []key
 
 	for rows.Next() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		var path string
 		var fileCount, totalSize int64
 		var depth int
@@ -91,6 +83,10 @@ func (d *Detector) findDirDupes() error {
 	}
 
 	for _, k := range keys {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		candidates := groups[k]
 		for i := 0; i < len(candidates); i++ {
 			if d.isCovered(candidates[i].path) {
@@ -101,17 +97,17 @@ func (d *Detector) findDirDupes() error {
 					continue
 				}
 				pi, pj := candidates[i].path, candidates[j].path
-				if sameInode(filepath.Join(d.dir, pi), filepath.Join(d.dir, pj)) {
+				if sameInode(filepath.Join(dir, pi), filepath.Join(dir, pj)) {
 					fmt.Printf("[hardlink] %s == %s\n", pi, pj)
 					d.covered[pi] = true
 					d.covered[pj] = true
 					continue
 				}
-				si, err := d.fileEntries(pi)
+				si, err := d.fileEntries(ctx, pi)
 				if err != nil {
 					return err
 				}
-				sj, err := d.fileEntries(pj)
+				sj, err := d.fileEntries(ctx, pj)
 				if err != nil {
 					return err
 				}
@@ -143,13 +139,13 @@ func (d *Detector) isCovered(path string) bool {
 
 // fileEntries returns a sorted slice of (basename, size) pairs for all own files
 // in the directory, plus one entry per direct subdirectory using its name and total_size.
-func (d *Detector) fileEntries(path string) ([]fileEntry, error) {
+func (d *Detector) fileEntries(ctx context.Context, path string) ([]fileEntry, error) {
 	if e, ok := d.entryCache[path]; ok {
 		return e, nil
 	}
 
-	fileRows, err := d.db.Query(
-		`SELECT basename, size FROM files WHERE path = ?`,
+	fileRows, err := d.DB.Query(
+		`SELECT basename, size FROM {prefix}files WHERE path = ?`,
 		path,
 	)
 	if err != nil {
@@ -157,6 +153,10 @@ func (d *Detector) fileEntries(path string) ([]fileEntry, error) {
 	}
 	var entries []fileEntry
 	for fileRows.Next() {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		var e fileEntry
 		if err := fileRows.Scan(&e.name, &e.size); err != nil {
 			fileRows.Close()
@@ -174,8 +174,8 @@ func (d *Detector) fileEntries(path string) ([]fileEntry, error) {
 	} else {
 		subdirPattern = path + "/%"
 	}
-	subdirRows, err := d.db.Query(
-		`SELECT path, total_size FROM dir_summaries
+	subdirRows, err := d.DB.Query(
+		`SELECT path, total_size FROM {prefix}dir_summaries
 		 WHERE path LIKE ? AND path NOT LIKE ?`,
 		subdirPattern, subdirPattern+"/%",
 	)
@@ -183,6 +183,10 @@ func (d *Detector) fileEntries(path string) ([]fileEntry, error) {
 		return nil, err
 	}
 	for subdirRows.Next() {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		var subpath string
 		var size int64
 		if err := subdirRows.Scan(&subpath, &size); err != nil {
